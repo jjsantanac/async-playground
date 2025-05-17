@@ -1,0 +1,8 @@
+[package]
+name = "hello"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+futures = "0.3"
+futures-timer = "3.0.3"
