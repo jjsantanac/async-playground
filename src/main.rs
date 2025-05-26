@@ -1,10 +1,14 @@
 use futures_timer::Delay;
-use hello::asyncruntime::runtime::{self, Runtime, Spawner};
+use hello::asyncruntime::{
+    runtime::{self, Runtime},
+    task_spawner::Spawner,
+};
 use std::{
     fs,
     io::{BufRead, BufReader, Write},
     net::{TcpListener, TcpStream},
     rc::Rc,
+    sync::Arc,
     thread,
     time::Duration,
 };
@@ -13,23 +17,8 @@ fn main() {
     let listener = TcpListener::bind("127.0.0.1:7878").unwrap();
     // let pool = ThreadPool::new(4);
 
-    let spawner = Rc::new(Spawner::new());
-    let runtime = Rc::new(Runtime::new(Rc::clone(&spawner)));
-
-    // let main_block = async move {
-    //     println!("spawn from async block");
-    //     spawner.spawn(async {
-    //         Delay::new(Duration::from_secs(14)).await;
-    //         println!("spawn from async block done")
-    //     });
-
-    //     // spawner.spawn(async {
-    //     //     Delay::new(Duration::from_secs(7));
-    //     // });
-
-    //     Delay::new(Duration::from_secs(7)).await;
-    //     println!("main block done")
-    // };
+    let spawner = Arc::new(Spawner::new());
+    let runtime = Arc::new(Runtime::new(Arc::clone(&spawner)));
 
     runtime.run(async move {
         println!("spawn from async block");
@@ -39,7 +28,7 @@ fn main() {
         });
 
         spawner.spawn(async {
-            Delay::new(Duration::from_secs(7)).await;
+            Delay::new(Duration::from_secs(20)).await;
             println!("spawn from async block 2 done")
         });
 

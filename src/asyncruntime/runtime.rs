@@ -1,165 +1,119 @@
+use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
-use std::task::{Context, Poll, RawWaker, RawWakerVTable, Wake, Waker};
-use std::thread::{self, Thread};
+use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+use std::thread::{self, Thread, park};
 use std::time::Duration;
 
-use futures_timer::Delay;
+use super::simple_waker::CustomWaker;
+use super::task_spawner::{self, Spawner};
 
-type Job = Pin<Box<dyn Future<Output = ()>>>;
+pub type Job = Pin<Box<dyn Future<Output = ()> + Send>>;
 
 pub struct Runtime {
-    spawner: Rc<Spawner>,
+    spawner: Arc<Spawner>,
 }
 
 impl Runtime {
     pub fn run<F>(&self, f: F)
     where
-        F: Future<Output = ()> + 'static,
+        F: Future<Output = ()> + 'static + Send,
     {
-        let fut = Box::pin(f);
+        let main_fut = Box::pin(f);
 
-        self.spawner.spawn(fut);
-        self.spawner.spawn(async {
-            Delay::new(Duration::from_secs(10)).await;
-            println!("spawn from run done")
-        });
+        self.spawner.spawn(main_fut);
 
-        let custom_waker: Waker = Arc::new(CustomWaker::new(thread::current())).into();
+        //let custom_waker: Waker = Arc::new(CustomWaker::new(thread::current())).into();
+        let custom_waker = create_waker(thread::current());
 
         let mut ctx = Context::from_waker(&custom_waker);
 
-        let mut waiting_tasks: VecDeque<Job> = VecDeque::new();
+        let mut waiting_tasks: VecDeque<Arc<Mutex<Job>>> = VecDeque::new();
 
-        // self.spawn(fut);
+        let mut id = 0;
 
-        // loop {
         loop {
             let task = {
                 let mut task_queue = self.spawner.jobs.lock().unwrap();
+                if task_queue.is_empty() && self.spawner.pending_jobs.lock().unwrap().is_empty() {
+                    break;
+                }
+
                 task_queue.pop_front()
             };
 
-            match task {
-                Some(mut t) => match t.as_mut().poll(&mut ctx) {
-                    Poll::Ready(_) => {
-                        println!("task ready");
-                    }
-                    Poll::Pending => {
-                        // println!("task pending");
-                        waiting_tasks.push_back(t);
-                        // thread::sleep(Duration::from_secs(5));
-                        thread::park();
-                    }
-                },
-                None => break,
+            let t = match task {
+                Some(task) => task,
+                None => {
+                    println!("no tasks ready, going to sleep");
+                    thread::park();
+                    continue;
+                }
+            };
+
+            let custom_waker2: Waker = Arc::new(CustomWaker::new(
+                thread::current(),
+                Arc::clone(&t),
+                Arc::clone(&self.spawner.jobs),
+                id,
+                Arc::clone(&self.spawner.pending_jobs),
+            ))
+            .into();
+
+            let mut new_ctx = Context::from_waker(&custom_waker2);
+
+            match t.lock().unwrap().as_mut().poll(&mut new_ctx) {
+                Poll::Ready(_) => println!("task ready!"),
+                Poll::Pending => {
+                    println!("Task pending..!");
+                    // waiting_tasks.push_back(Arc::clone(&t));
+                    self.spawner
+                        .pending_jobs
+                        .lock()
+                        .unwrap()
+                        .insert(id, Arc::clone(&t));
+                    id += 1;
+                    println!("task {id:?} inserted into pending");
+
+                    // thread::sleep(Duration::from_secs(25));
+                }
             }
 
-            while let Some(t) = waiting_tasks.pop_front() {
-                self.spawner.jobs.lock().unwrap().push_back(t);
-            }
+            // match task {
+            //     Some(mut t) => match t.as_mut().poll(&mut ctx) {
+            //         Poll::Ready(_) => {
+            //             println!("task ready");
+            //         }
+            //         Poll::Pending => {
+            //             println!("task pending");
+            //             waiting_tasks.push_back(t);
+            //             // thread::sleep(Duration::from_secs(5));
+            //             thread::park();
+            //         }
+            //     },
+            //     None => break,
             // }
-            // while let Some(mut task) = self.spawner.jobs.lock().unwrap().pop_front() {
-            // println!("task loop");
-            // match task.as_mut().poll(&mut context) {
-            //     Poll::Ready(_) => {
-            //         println!("task ready");
-            //     }
-            //     Poll::Pending => {
-            //         println!("task pending");
-            //         waiting_tasks.push_back(task);
-            //         thread::sleep(Duration::from_secs(5));
-            //     }
-            // }
-            // // }
-            // if let Some(t) = waiting_tasks.pop_front() {
-            //     self.spawner.jobs.lock().unwrap().push_back(t);
-            // }
-            // println!("hi");
-            // match fut.as_mut().poll(&mut context) {
-            //     Poll::Ready(_) => {
-            //         break 'outer;
-            //     }
-            //     Poll::Pending => {
-            //         println!("hello from pending");
-            //         thread::sleep(Duration::from_secs(5));
-            //     }
+
+            // while let Some(t) = waiting_tasks.pop_front() {
+            //      self.spawner.jobs.lock().unwrap().push_back(t);
             // }
         }
     }
 
-    pub fn new(spawner: Rc<Spawner>) -> Self {
+    pub fn new(spawner: Arc<Spawner>) -> Self {
         Runtime { spawner }
     }
 }
 
-pub struct Spawner {
-    jobs: Mutex<VecDeque<Job>>,
-    jobs2: VecDeque<Job>,
-}
-impl Spawner {
-    pub fn new() -> Self {
-        Spawner {
-            jobs: Mutex::new(VecDeque::new()),
-            jobs2: VecDeque::new(),
-        }
-    }
-    pub fn spawn<F>(&self, task: F)
-    where
-        F: Future<Output = ()> + 'static,
-    {
-        println!("spawn task");
-        self.jobs.lock().unwrap().push_back(Box::pin(task));
-        println!("spawn success")
-    }
-
-    pub fn spawn2<F>(&mut self, task: F)
-    where
-        F: Future<Output = ()> + 'static,
-    {
-        println!("spawn task");
-        self.jobs2.push_back(Box::pin(task));
-        println!("spawn success")
-    }
-}
-
-struct CustomWaker {
-    main_thread_handle: Thread,
-}
-impl CustomWaker {
-    fn new(main_thread_handle: Thread) -> Self {
-        CustomWaker { main_thread_handle }
-    }
-}
-impl Wake for CustomWaker {
-    fn wake(self: Arc<Self>) {
-        println!("custom waker hello");
-        self.main_thread_handle.unpark();
-    }
-}
-
-pub fn create_waker(data: Arc<AtomicBool>) -> Waker {
-    let raw_waker = RawWaker::new(Arc::into_raw(data.clone()) as *const (), &VTABLE);
+pub fn create_waker(data: Thread) -> Waker {
+    // let raw_waker = RawWaker::new(Arc::into_raw(data.clone()) as *const (), &VTABLE);
+    let boxed = Box::new(data);
+    let raw_waker = RawWaker::new(Box::into_raw(boxed) as *const (), &VTABLE);
+    // let raw_waker = RawWaker::new(&data as *const Thread as *const (), &VTABLE);
     unsafe { Waker::from_raw(raw_waker) }
-}
-
-fn create_vtable() -> RawWakerVTable {
-    RawWakerVTable::new(
-        |data| {
-            println!("waker clone");
-            RawWaker::new(data, &VTABLE)
-        },
-        |data| {
-            println!("wake");
-        },
-        |data| {
-            println!("wake by ref");
-        },
-        drop,
-    )
 }
 
 const VTABLE: RawWakerVTable = RawWakerVTable::new(
@@ -169,6 +123,11 @@ const VTABLE: RawWakerVTable = RawWakerVTable::new(
     },
     |data| {
         println!("wake");
+        let d = unsafe { &*(data as *const Thread) };
+        // unsafe {
+        //     let a = &*d;
+        //     a.unpark();
+        // }
     },
     |data| {
         println!("wake by ref");
