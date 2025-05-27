@@ -7,7 +7,6 @@ use std::{
     fs,
     io::{BufRead, BufReader, Write},
     net::{TcpListener, TcpStream},
-    rc::Rc,
     sync::Arc,
     thread,
     time::Duration,
@@ -28,7 +27,9 @@ fn main() {
         });
 
         spawner.spawn(async {
-            Delay::new(Duration::from_secs(20)).await;
+            Delay::new(Duration::from_secs(21)).await;
+            // println!("subtask from 2 done");
+            //Delay::new(Duration::from_secs(25)).await;
             println!("spawn from async block 2 done")
         });
 

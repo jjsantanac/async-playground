@@ -1,15 +1,10 @@
-use std::cell::RefCell;
-use std::collections::VecDeque;
 use std::pin::Pin;
-use std::rc::Rc;
-use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
-use std::thread::{self, Thread, park};
-use std::time::Duration;
+use std::thread::{self, Thread};
 
 use super::simple_waker::CustomWaker;
-use super::task_spawner::{self, Spawner};
+use super::task_spawner::Spawner;
 
 pub type Job = Pin<Box<dyn Future<Output = ()> + Send>>;
 
@@ -26,13 +21,8 @@ impl Runtime {
 
         self.spawner.spawn(main_fut);
 
-        //let custom_waker: Waker = Arc::new(CustomWaker::new(thread::current())).into();
-        let custom_waker = create_waker(thread::current());
-
-        let mut ctx = Context::from_waker(&custom_waker);
-
-        let mut waiting_tasks: VecDeque<Arc<Mutex<Job>>> = VecDeque::new();
-
+        // TODO think of something better than incrementing id here
+        // TODO think about who should manage both queues
         let mut id = 0;
 
         loop {
@@ -54,7 +44,7 @@ impl Runtime {
                 }
             };
 
-            let custom_waker2: Waker = Arc::new(CustomWaker::new(
+            let waker: Waker = Arc::new(CustomWaker::new(
                 thread::current(),
                 Arc::clone(&t),
                 Arc::clone(&self.spawner.jobs),
@@ -63,43 +53,17 @@ impl Runtime {
             ))
             .into();
 
-            let mut new_ctx = Context::from_waker(&custom_waker2);
+            let mut ctx = Context::from_waker(&waker);
 
-            match t.lock().unwrap().as_mut().poll(&mut new_ctx) {
+            match t.lock().unwrap().as_mut().poll(&mut ctx) {
                 Poll::Ready(_) => println!("task ready!"),
                 Poll::Pending => {
                     println!("Task pending..!");
-                    // waiting_tasks.push_back(Arc::clone(&t));
-                    self.spawner
-                        .pending_jobs
-                        .lock()
-                        .unwrap()
-                        .insert(id, Arc::clone(&t));
+                    self.spawner.queue_pending(Arc::clone(&t), id);
                     id += 1;
                     println!("task {id:?} inserted into pending");
-
-                    // thread::sleep(Duration::from_secs(25));
                 }
             }
-
-            // match task {
-            //     Some(mut t) => match t.as_mut().poll(&mut ctx) {
-            //         Poll::Ready(_) => {
-            //             println!("task ready");
-            //         }
-            //         Poll::Pending => {
-            //             println!("task pending");
-            //             waiting_tasks.push_back(t);
-            //             // thread::sleep(Duration::from_secs(5));
-            //             thread::park();
-            //         }
-            //     },
-            //     None => break,
-            // }
-
-            // while let Some(t) = waiting_tasks.pop_front() {
-            //      self.spawner.jobs.lock().unwrap().push_back(t);
-            // }
         }
     }
 

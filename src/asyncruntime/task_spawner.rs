@@ -1,7 +1,5 @@
 use std::{
-    cell::RefCell,
     collections::{HashMap, VecDeque},
-    rc::Rc,
     sync::{Arc, Mutex},
 };
 
@@ -27,5 +25,9 @@ impl Spawner {
             .lock()
             .unwrap()
             .push_back(Arc::new(Mutex::new(Box::pin(task))));
+    }
+
+    pub fn queue_pending(&self, task: Arc<Mutex<Job>>, id: usize) {
+        self.pending_jobs.lock().unwrap().insert(id, task);
     }
 }
