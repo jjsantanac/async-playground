@@ -6,3 +6,5 @@ edition = "2024"
 [dependencies]
 futures = "0.3"
 futures-timer = "3.0.3"
+mio = {version = "1", features = ["os-poll", "net"]}
+

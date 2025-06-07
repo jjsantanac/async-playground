@@ -1,15 +1,24 @@
+use std::cell::RefCell;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 use std::thread::{self, Thread};
+use std::time::Duration;
+
+use mio::net::TcpListener;
+use mio::{Events, Interest, Token};
 
 use super::simple_waker::CustomWaker;
 use super::task_spawner::Spawner;
 
 pub type Job = Pin<Box<dyn Future<Output = ()> + Send>>;
 
+const SERVER: Token = Token(0);
 pub struct Runtime {
     spawner: Arc<Spawner>,
+    poll: Arc<Mutex<mio::Poll>>,
+    events: Arc<Mutex<Events>>,
 }
 
 impl Runtime {
@@ -26,6 +35,15 @@ impl Runtime {
         let mut id = 0;
 
         loop {
+            // self.poll
+            //     .lock()
+            //     .unwrap()
+            //     .poll(
+            //         &mut self.events.lock().unwrap(),
+            //         Some(Duration::from_millis(10)),
+            //     )
+            //     .unwrap();
+
             let task = {
                 let mut task_queue = self.spawner.jobs.lock().unwrap();
                 if task_queue.is_empty() && self.spawner.pending_jobs.lock().unwrap().is_empty() {
@@ -67,8 +85,16 @@ impl Runtime {
         }
     }
 
-    pub fn new(spawner: Arc<Spawner>) -> Self {
-        Runtime { spawner }
+    pub fn new(
+        spawner: Arc<Spawner>,
+        poll: Arc<Mutex<mio::Poll>>,
+        events: Arc<Mutex<Events>>,
+    ) -> Self {
+        Runtime {
+            spawner,
+            poll,
+            events,
+        }
     }
 }
 
